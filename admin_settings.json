@@ -1,0 +1,8 @@
+{
+  "auto_start_assistant": true,
+  "assistant_delay": 3,
+  "speech_recognition": true,
+  "text_to_speech": true,
+  "auto_backup": true,
+  "data_retention_days": 30
+}
