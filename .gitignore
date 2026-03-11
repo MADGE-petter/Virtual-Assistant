@@ -32,9 +32,20 @@ ENV/
 *.swo
 *~
 
-# Database (optional - comment out if you want to include database)
-# conversations.db
-# *.db
+# Database - KHÔNG upload database lên GitHub
+conversations.db
+*.db
+database/*.db
+
+# Config files - KHÔNG upload config lên GitHub
+user_data.json
+admin_settings.json
+config.json
+secrets.json
+
+# Export files - KHÔNG upload export lên GitHub
+export_data_*.json
+export_*.json
 
 # Logs
 *.log
@@ -52,7 +63,3 @@ Thumbs.db
 *.temp
 *.bak
 backup_*
-
-# Config files with sensitive data
-config.json
-secrets.json
