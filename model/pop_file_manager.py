@@ -4,10 +4,7 @@ import subprocess
 
 
 def open_file_or_directory(path: str):
-    """
-    Mở một tệp hoặc thư mục bằng ứng dụng mặc định của hệ thống.
-    path: Đường dẫn đến tệp hoặc thư mục.
-    """
+   
     if not os.path.exists(path):
         return f"Lỗi: Đường dẫn '{path}' không tồn tại."
 
@@ -36,10 +33,7 @@ def open_file_or_directory(path: str):
 
 
 def list_directory_contents(path: str):
-    """
-    Liệt kê nội dung (tệp và thư mục con) của một thư mục.
-    path: Đường dẫn đến thư mục cần liệt kê.
-    """
+   
     if not os.path.exists(path):
         return f"Lỗi: Thư mục '{path}' không tồn tại."
     if not os.path.isdir(path):

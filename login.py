@@ -16,82 +16,88 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 def main():
     """Main function to run login application"""
     try:
-        print("Starting Pop Assistant...")
         app = QApplication(sys.argv)
-        
-        # Set application properties
         app.setApplicationName("Pop Assistant Login")
         app.setOrganizationName("Pop AI")
-        app.setQuitOnLastWindowClosed(True)  # Tự động quit khi window đóng
+        app.setQuitOnLastWindowClosed(True)
         
-        # Show login window first
-        print("Importing LoginView...")
+        # Set application icon
+        try:
+            from PyQt6.QtGui import QIcon
+            icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'assets', 'icon.png')
+            if os.path.exists(icon_path):
+                app.setWindowIcon(QIcon(icon_path))
+            else:
+                print(f"[Login] Icon not found: {icon_path}")
+        except Exception as e:
+            print(f"[Login] Could not set icon: {e}")
+
+        # Import temperature_monitor để quản lý OHM lifecycle
+        _monitor_ref = None
+        try:
+            from model.temperature_monitor import _monitor
+            _monitor_ref = _monitor
+        except Exception as e:
+            print(f"[Login] Không import được temperature_monitor: {e}")
+        
+        def on_app_exit():
+            try:
+                if _monitor_ref:
+                    _monitor_ref.stop_ohm()
+            except Exception as e:
+                print(f"[Login] Lỗi dừng OHM: {e}")
+        
+        app.aboutToQuit.connect(on_app_exit)
+
         from view.login_view import LoginView
-        print("LoginView imported successfully")
+        from service.login_service import LoginService
         
-        # Create custom login window that can detect Admin Code
+        # Tạo Service ở Controller level (login.py đóng vai trò Controller)
+        login_service = LoginService()
+        
         class LoginWindowWithAdmin(LoginView):
-            def __init__(self, admin_callback):
-                super().__init__()
+            def __init__(self, admin_callback, login_service):
+                super().__init__(login_service)
                 self.admin_callback = admin_callback
                 self.alt_count = 0
                 
-                # Setup key press timer
                 self.key_timer = QTimer()
                 self.key_timer.timeout.connect(self.clear_keys)
                 self.key_timer.setSingleShot(True)
             
             def keyPressEvent(self, event):
-                """Handle key press events for Admin Code"""
                 key = event.key()
-                
                 # Detect Alt key
                 if key == Qt.Key.Key_Alt:
                     self.alt_count += 1
                     if self.alt_count >= 3:
-                        self.admin_callback()  # Call the callback
+                        self.admin_callback() 
                         self.alt_count = 0
                     else:
-                        # Start timer to clear keys after 2 seconds
                         self.key_timer.start(2000)
                 
-                super().keyPressEvent(event)
-            
+                super().keyPressEvent(event)   
             def clear_keys(self):
-                """Clear pressed keys"""
                 self.alt_count = 0
-        
-        # Tạo một biến global để giữ admin login
+
         global admin_login_ref, admin_panel_ref
         admin_login_ref = None
         admin_panel_ref = None
         
         def open_admin_login():
-            """Open admin login window"""
             global admin_login_ref
             try:
-                print("Opening admin login...")
-                from view.admin_login import AdminLoginView
+                from admin.view.admin_login import AdminLoginView
                 admin_login = AdminLoginView()
                 admin_login.login_success.connect(on_admin_login_success)
-                
-                # Force add to application and show
                 admin_login.show()
                 admin_login.raise_()
                 admin_login.activateWindow()
-                
-                # Force process events để admin login thực sự hiển thị
                 app.processEvents()
                 QTimer.singleShot(100, lambda: None)
                 app.processEvents()
-                
-                # Hide login window SAU KHI admin login đã được show
                 login_window.hide()
-                
-                # Lưu reference để không bị garbage collected
                 admin_login_ref = admin_login
-                
-                print("Admin login window opened successfully")
                 
                 # Debug: Check widgets immediately
                 widgets = QApplication.topLevelWidgets()
@@ -116,7 +122,7 @@ def main():
             global admin_panel_ref
             try:
                 print(f"Admin login successful for: {username}")
-                from view.admin_panel import create_admin_panel
+                from admin.view.admin_panel import create_admin_panel
                 admin_panel = create_admin_panel()
                 
                 # Lưu reference để không bị garbage collected
@@ -153,11 +159,8 @@ def main():
                 print(f"Lỗi mở admin panel: {e}")
                 import traceback
                 traceback.print_exc()
-        
-        # Create login window with admin callback - SẼ ĐƯỢC GÁN SAU
+
         login_window = None
-        
-        # Handle login success - create main window after login
         main_window = None
         
         def on_login_success(username):
@@ -170,7 +173,6 @@ def main():
                 main_window = main.create_main_window(username)
                 
                 if main_window is None:
-                    print("ERROR: main_window is None!")
                     return
                 
                 # Show main window with force methods
@@ -180,10 +182,7 @@ def main():
                 main_window.setFocus()
                 
                 # Close login immediately
-                login_window.close()
-                
-                print("Main window shown successfully")
-                
+                login_window.close()              
             except ImportError as e:
                 print(f"Lỗi import: {e}")
                 import traceback
@@ -196,24 +195,17 @@ def main():
                 login_window.show()
         
         # Bây giờ mới tạo login window với admin callback
-        login_window = LoginWindowWithAdmin(open_admin_login)
+         # Controller inject Service vào View
+        login_window = LoginWindowWithAdmin(open_admin_login, login_service)
         
         login_window.login_success.connect(on_login_success)
         
         # Show login window
-        print("Showing login window...")
-        login_window.show()
-        print("Login window shown successfully")
-        
+        login_window.show()    
         # Run the application
-        print("Running application...")
         result = app.exec()
-        print(f"Application ended with code: {result}")
-        
         # Check final state
         widgets = QApplication.topLevelWidgets()
-        print(f"Final widget count: {len(widgets)}")
-        
         visible_count = 0
         for widget in widgets:
             if widget.isVisible():
@@ -222,10 +214,8 @@ def main():
                 print(f"  Visible: {title}")
         
         print(f"Total visible: {visible_count}")
-        print("Application exiting normally")
             
     except ImportError as e:
-        print("Lỗi: PyQt6 không được cài đặt. Vui lòng cài đặt: pip install PyQt6")
         print(f"Chi tiết lỗi: {e}")
         input("Nhấn Enter để thoát...")
     except Exception as e:

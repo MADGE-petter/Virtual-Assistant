@@ -89,7 +89,7 @@ class HistoryViewer(QMainWindow):
         main_layout = QVBoxLayout(central_widget)
         
         # Title
-        title = QLabel("📚 Lịch sử trò chuyện")
+        title = QLabel("Lịch sử trò chuyện")
         title.setStyleSheet("""
             QLabel {
                 color: qlineargradient(x1:0, y1:0, x2:1, y2:0, 
@@ -106,11 +106,11 @@ class HistoryViewer(QMainWindow):
         # Button layout
         button_layout = QHBoxLayout()
         
-        self.refresh_btn = QPushButton("🔄 Làm mới")
+        self.refresh_btn = QPushButton("Làm mới")
         self.refresh_btn.clicked.connect(self.refresh_data)
         button_layout.addWidget(self.refresh_btn)
         
-        self.clear_btn = QPushButton("🗑️ Xóa cũ (>30 ngày)")
+        self.clear_btn = QPushButton("Xóa cũ (>30 ngày)")
         self.clear_btn.clicked.connect(self.clear_old_data)
         button_layout.addWidget(self.clear_btn)
         
@@ -124,7 +124,7 @@ class HistoryViewer(QMainWindow):
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
         
-        sessions_label = QLabel("📅 Các phiên trò chuyện:")
+        sessions_label = QLabel("Các phiên trò chuyện:")
         left_layout.addWidget(sessions_label)
         
         self.sessions_list = QListWidget()
@@ -137,7 +137,7 @@ class HistoryViewer(QMainWindow):
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
         
-        content_label = QLabel("💬 Nội dung trò chuyện:")
+        content_label = QLabel("Nội dung trò chuyện:")
         right_layout.addWidget(content_label)
         
         self.conversation_text = QTextEdit()
@@ -164,7 +164,7 @@ class HistoryViewer(QMainWindow):
                 start_str = start_time.replace('T', ' ')[:19] if start_time else "Unknown"
                 end_str = end_time.replace('T', ' ')[:19] if end_time else "Đang hoạt động"
                 
-                item_text = f"📝 {start_str} - {end_str}"
+                item_text = f"{start_str} - {end_str}"
                 item = QListWidgetItem(item_text)
                 item.setData(Qt.ItemDataRole.UserRole, session_id)
                 self.sessions_list.addItem(item)
@@ -176,18 +176,18 @@ class HistoryViewer(QMainWindow):
         """Tải nội dung cuộc trò chuyện của phiên được chọn"""
         try:
             session_id = item.data(Qt.ItemDataRole.UserRole)
-            conversations = self.db.get_session_conversations(session_id)
+            conversations = self.db.get_session_conversations(session_id, self.current_user)
             
-            content = f"📅 Phiên trò chuyện: {session_id}\n"
+            content = f"Phiên trò chuyện: {session_id}\n"
             content += "=" * 50 + "\n\n"
             
             for conv in conversations:
                 user_msg, bot_response, timestamp = conv
                 time_str = timestamp.replace('T', ' ')[:19] if timestamp else "Unknown"
                 
-                content += f"⏰ {time_str}\n"
-                content += f"👤 Bạn: {user_msg}\n"
-                content += f"🤖 Pop: {bot_response}\n"
+                content += f" {time_str}\n"
+                content += f" Bạn: {user_msg}\n"
+                content += f" Pop: {bot_response}\n"
                 content += "-" * 30 + "\n\n"
             
             self.conversation_text.setPlainText(content)

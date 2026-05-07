@@ -14,8 +14,8 @@ from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont, QColor, QPalette
 import hashlib
 
-# Add current directory to path (go up one level)
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+# Add current directory to path (go up two levels to root)
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 class AdminLoginView(QDialog):
     """Admin Login Interface"""
@@ -291,14 +291,13 @@ class AdminLoginView(QDialog):
                     if new_password == confirm_password:
                         if len(new_password) >= 4:
                             self.save_new_password(new_password)
-                            self.status_label.setText("✅ Đổi mật khẩu thành công!")
+                            self.status_label.setText(" Đổi mật khẩu thành công!")
                         else:
-                            self.status_label.setText("❌ Mật khẩu phải có ít nhất 4 ký tự!")
+                            self.status_label.setText(" Mật khẩu phải có ít nhất 4 ký tự!")
                     else:
-                        self.status_label.setText("❌ Mật khẩu xác nhận không khớp!")
-    
+                        self.status_label.setText("Mật khẩu xác nhận không khớp!")
+
     def save_new_password(self, new_password):
-        """Save new admin password to database"""
         import sqlite3
         import os
         import hashlib

@@ -1,225 +1,222 @@
-import json
-import os
+"""PopController - Facade điều phối chính."""
 import threading
-import time
-import webbrowser
+import sys
+import os
+sys.path.append(os.path.dirname(__file__))
 
-class PopController:
-    def __init__(self, model, view):
-        self.model = model
+from PyQt6.QtCore import pyqtSignal, QObject
+
+# Services
+from action import ActionHandler
+from service.AudioService import AudioService
+from model.Sql import SqlService
+from service.wake_word import WakeWordDetector
+from service.user_service import UserService
+from service.alert_service import AlertManager
+from service.analytics_service import get_analytics_service
+
+# Sub-controllers
+from controller.voice_controller import VoiceController
+from controller.user_controller import UserController
+from controller.system_controller import SystemController
+from controller.conversation_controller import ConversationController
+
+
+class PopController(QObject):
+    """Facade controller - chỉ điều phối, không xử lý logic chi tiết."""
+    
+    # Signal để wake up từ thread khác (thread-safe)
+    wakeUpRequested = pyqtSignal()
+    
+    def __init__(self, view=None, model=None, login_username=None):
+        super().__init__()
         self.view = view
-        self.assistant_active = False
-        self.assistant_started = False
-        self.user_name = "bạn"
-        self.assistant_name = "Pop"
-        self.user_data_file = "user_data.json"
+        self.login_username = login_username
         
-        # Set up controller callbacks
-        self.setup_callbacks()
+        # State
+        self._started = False
+        self._active = False
         
-        # Load user data
-        self.load_user_name()
+        # === KHỞI TẠO SERVICES ===
+        self.audio = AudioService(view)
+        self.sql = SqlService()
+        self.actions = ActionHandler(self.audio, view)
+        
+        # User service
+        self._user_svc = UserService(self.sql)
+        if login_username:
+            self._user_svc.login_name = login_username
+            # Only load display_name if exists, don't fallback to login_username
+            # Bot will ask for name if display_name is None
+            loaded_name = self._user_svc.get_display_name_by_login(login_username)
+            if loaded_name and loaded_name != "bạn":
+                self._user_svc.display_name = loaded_name
+            # else: leave as None so bot asks for name
+        
+        # Alert & Analytics - only use display_name if set, otherwise "bạn"
+        user_name = getattr(self._user_svc, 'display_name', None) or "bạn"
+        self._alert_mgr = AlertManager(self.audio, self._on_alert, 30, user_name)
+        self._analytics = get_analytics_service(user_name or "user")
+        self._analytics.start()
+        
+        # === KHỞI TẠO SUB-CONTROLLERS ===
+        self.wake_detector = WakeWordDetector(self.audio, view)
+        self.voice = VoiceController(self.audio)
+        self.voice.init_wake_detector(self.wake_detector)
+        self.user = UserController(self._user_svc, self.sql)
+        self.system = SystemController(self._alert_mgr, self._analytics)
+        self.conversation = ConversationController(self.audio, self.sql, self.actions, self.user)
+        
+        # === SETUP CALLBACKS ===
+        self.voice.on_wake_up = self._request_wake_up
+        self.voice.on_go_sleep = self._on_go_sleep
+        self.wakeUpRequested.connect(self._do_wake_up)
+        
+        # Inject controller vào view (view không cần biết services)
+        if view:
+            view.set_controller(self)
     
-    def setup_callbacks(self):
-        # Connect view events to controller methods
-        self.view.on_start_stop_click = self.on_start_stop_click
-        self.view.on_mic_click = self.on_mic_click
-        self.view.on_exit_click = self.on_exit_click
+    # ============================================================
+    # PUBLIC API
+    # ============================================================
     
-    def load_user_name(self):
-        """Load user name from file if exists"""
+    def start(self):
+        """Khởi động assistant."""
+        if self._started:
+            self._active = True
+            return
+        
+        self._started = True
+        self._active = True
+        self.conversation.set_assistant_active(True)
+        
+        # Init intent service early to avoid race conditions
+        self.conversation.init_intent_service()
+        
+        self.system.start_monitoring(self.user.get_display_name())
+        self._enter_active_mode()
+    
+    def stop(self):
+        """Dừng assistant."""
+        self._active = False
+        self.conversation.set_assistant_active(False)
+        self.voice.stop_wake_word_detection()
+        self.system.stop_monitoring()
+        self.conversation.end_session()
+    
+    def sleep(self, manual=True):
+        """Vào sleep mode."""
+        self.voice.go_to_sleep(manual, self.audio.speak)
+    
+    def wake(self):
+        """Thức dậy từ sleep."""
+        self.voice.handle_wake_up()
+    
+    # ============================================================
+    # DELEGATE METHODS 
+    # ============================================================
+    
+    def speak(self, text):
+        """Bot nói."""
+        return self.voice.speak(text, update_ui=True)
+    
+    def listen(self):
+        """Bot nghe."""
+        return self.voice.get_voice_input()
+    
+    # ============================================================
+    # PRIVATE 
+    # ============================================================
+    
+    def _request_wake_up(self):
+        """Callback từ VoiceController khi wake word detected."""
+        self.wakeUpRequested.emit()
+    
+    def _activate_view(self):
+        """Activate and show main window (helper to avoid duplication)."""
+        if self.view:
+            self.view.show()
+            self.view.raise_()
+            self.view.activateWindow()
+    
+    def _do_wake_up(self):
+        """Thực hiện wake up trên main thread."""
+        self.system.set_sleep_mode(False)
+        self.system.reset_wellness_timers()
+        
+        self._activate_view()
+        self._start_conversation(from_wake_up=True)
+    
+    def _on_go_sleep(self):
+        """Callback khi vào sleep."""
+        self.system.set_sleep_mode(True)
+        if self.view:
+            self.view.hide()
+    
+    def _on_idle(self):
+        """Callback khi idle timeout."""
+        self.sleep(manual=False)
+    
+    def _on_alert(self, alert_data):
+        """Callback khi có alert."""
+        if self.view:
+            self.view.show_alert_notification(alert_data)
+    
+    def _on_gesture(self, gesture_type):
+        """Callback từ gesture service."""
+        self.handle_gesture(gesture_type)
+    
+    # ============================================================
+    # PRIVATE - Conversation management
+    # ============================================================
+    
+    def _enter_active_mode(self):
+        """Vào active mode - hiện app và bắt đầu conversation."""
+        self._activate_view()
+        self.system.reset_wellness_timers()
+        self._start_conversation()
+        self.voice.start_idle_monitor(self._on_idle)
+    
+    def _start_conversation(self, from_wake_up: bool = False):
+        """Bắt đầu conversation thread."""
+        threading.Thread(target=self._run_conversation, args=(from_wake_up,), daemon=True).start()
+    
+    def _run_conversation(self, from_wake_up: bool = False):
+        """Conversation main loop."""
         try:
-            if os.path.exists(self.user_data_file):
-                with open(self.user_data_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    self.user_name = data.get('name', 'bạn')
-                    print(f"Đã tải tên người dùng: {self.user_name}")
+            self.conversation.start_session()
+            self.conversation.run_first_interaction(
+                get_input_callback=self.voice.get_voice_input,
+                speak_callback=self.audio.speak,
+                from_wake_up=from_wake_up
+            )
+            self.conversation.run_main_loop(
+                get_input_callback=self.voice.get_voice_input,
+                on_idle_callback=lambda: self.sleep(manual=False),
+                idle_timeout=45
+            )
         except Exception as e:
-            print(f"Lỗi khi tải tên người dùng: {e}")
-            self.user_name = "bạn"
+            print(f"[PopController] Conversation error: {e}")
+            import traceback
+            traceback.print_exc()
     
-    def save_user_name(self, name):
-        """Save user name to file"""
-        try:
-            data = {'name': name}
-            with open(self.user_data_file, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            print(f"Đã lưu tên người dùng: {name}")
-        except Exception as e:
-            print(f"Lỗi khi lưu tên người dùng: {e}")
+    # ============================================================
+    # LEGACY COMPATIBILITY
+    # ============================================================
     
-    def on_start_stop_click(self):
-        if not self.assistant_started:
-            # First time starting
-            self.view.update_status(f"{self.assistant_name} đang hoạt động...", "yellow")
-            self.assistant_active = True
-            self.assistant_started = True
-            threading.Thread(target=self._run_assistant_logic, daemon=True).start()
-        else:
-            # Assistant was started before but is now inactive, allow restart
-            self.view.update_status("Đang khởi động lại...", "orange")
-            self.assistant_active = True
-            threading.Thread(target=self._run_assistant_logic, daemon=True).start()
+    @property
+    def assistant_active(self):
+        return self._active
     
-    def on_mic_click(self):
-        if not self.assistant_active:
-            self.view.update_status("Vui lòng bắt đầu trợ lý trước!", "red")
-            return
-        
-        # Manual voice input
-        threading.Thread(target=self._manual_voice_input, daemon=True).start()
+    @property  
+    def assistant_started(self):
+        return self._started
     
-    def on_exit_click(self):
-        self.assistant_active = False
-        self.view.destroy_window_after_delay(1000)
+    def set_wake_word_enabled(self, enabled):
+        """Legacy."""
+        self.voice.wake_word_enabled = enabled
     
-    def speak_ui(self, text):
-        """UI-aware speak function"""
-        # Set speaking state for animation
-        self.view.set_speaking_state(True)
-        self.view.set_listening_state(False)
-        
-        # Update UI
-        display_text = text.replace("Bot:", f"{self.assistant_name}:") if text.startswith("Bot:") else text
-        self.view.update_bot_text(display_text)
-        
-        # Call model speak function
-        self.model.speak(text)
-        
-        # Clear bot text after delay
-        speech_delay = max(3000, len(text) * 120)
-        self.view.clear_bot_text_after_delay(speech_delay)
-        
-        # Reset speaking state after delay
-        def reset_speaking():
-            self.view.set_speaking_state(False)
-        self.view.master.after(speech_delay, reset_speaking)
-    
-    def get_voice_ui(self):
-        """UI-aware voice input function"""
-        # Wait until bot finishes speaking
-        while self.view.is_speaking:
-            time.sleep(0.1)
-        
-        # Add delay to ensure echo has dissipated
-        time.sleep(2.0)
-        
-        # Set listening state
-        self.view.set_listening_state(True)
-        self.view.set_speaking_state(False)
-        
-        # Update UI
-        self.view.update_status("Bắt đầu nói...", "orange")
-        time.sleep(0.5)
-        self.view.update_status("Đang nghe...", "red")
-        self.view.update_user_text("")
-        self.view.update_mic_icon(True)
-        
-        # Get voice input
-        text = self.model.get_voice()
-        
-        # Reset listening state
-        self.view.set_listening_state(False)
-        self.view.update_mic_icon(False)
-        
-        # Update UI with recognized text
-        if text and text != "..." and text != "Lỗi":
-            display_text = text if text != 0 else "Không nhận diện được giọng nói."
-            self.view.update_user_text(f"Bạn nói: {display_text}")
-        
-        return text
-    
-    def get_text_ui(self):
-        """Get text with retry logic"""
-        for i in range(3):
-            text = self.get_voice_ui()
-            if text and text != 0 and text != "...":
-                return text.lower()
-            elif i < 2:
-                self.speak_ui(f"{self.assistant_name} không nghe rõ, bạn có thể nói lại không?")
-        
-        self.speak_ui("Tạm biệt!")
-        if self.view.window_exists():
-            self.view.destroy_window_after_delay(5000)
-        return 0
-    
-    def _manual_voice_input(self):
-        """Handle manual voice input from mic button"""
-        text = self.get_voice_ui()
-        if text and text != 0 and text != "...":
-            intent = self.model.classify_intent(text)
-            action_result = self.model.handle_intent(intent, self.user_name, text)
-            self._handle_action_result(action_result, text)
-    
-    def _run_assistant_logic(self):
-        """Main assistant logic loop"""
-        # Check if we already know user's name
-        if self.user_name != "bạn":
-            self.speak_ui(f"Chào mừng trở lại {self.user_name}!")
-            time.sleep(1)
-        else:
-            # First time, ask for name
-            self.speak_ui(f"Xin chào, tôi là {self.assistant_name}. Bạn tên là gì nhỉ?")
-            time.sleep(1)
-            
-            name_input = self.get_text_ui()
-            if name_input and name_input != 0:
-                self.user_name = name_input
-                self.save_user_name(name_input)
-                self.speak_ui(f"Chào bạn {self.user_name}.")
-            else:
-                self.speak_ui(f"Tôi không nghe rõ tên bạn. Chúng ta sẽ bắt đầu lại khi bạn nhấn mic.")
-                self.assistant_active = False
-                return
-        
-        # Main interaction loop
-        while self.view.window_exists() and self.assistant_active:
-            self.speak_ui("Bạn cần tôi làm gì?")
-            time.sleep(5)
-            
-            text = self.get_text_ui()
-            
-            if not text or text == 0:
-                self.assistant_active = False
-                break
-            
-            intent = self.model.classify_intent(text)
-            action_result = self.model.handle_intent(intent, self.user_name, text)
-            self._handle_action_result(action_result, text)
-            
-            if not self.view.window_exists():
-                break
-            
-            time.sleep(1)
-        
-        # Final goodbye message
-        self.speak_ui("Hẹn gặp lại bạn! Chúc bạn một ngày tốt lành.")
-        self.assistant_active = False
-        if self.view.window_exists():
-            self.view.destroy_window_after_delay(2000)
-    
-    def _handle_action_result(self, action_result, original_text):
-        """Handle special action results"""
-        if action_result == "goodbye_intent_detected":
-            self.assistant_active = False
-            return
-        elif action_result == "need_search_query":
-            self.speak_ui("Bạn muốn tìm kiếm gì trên Google?")
-            time.sleep(3)
-            search_query = self.get_text_ui()
-            if search_query and search_query != 0 and search_query != "...":
-                webbrowser.open(f"https://www.google.com/search?q={search_query}")
-                self.speak_ui(f"Tôi đã tìm kiếm {search_query} trên Google.")
-            else:
-                self.speak_ui("Không có gì để tìm kiếm!")
-            return
-        elif action_result and "google.com" in action_result.lower():
-            self.speak_ui("Bạn muốn tìm kiếm gì trên Google?")
-            time.sleep(3)
-            search_query = self.get_text_ui()
-            if search_query and search_query != 0 and search_query != "...":
-                webbrowser.open(f"https://www.google.com/search?q={search_query}")
-                self.speak_ui(f"Tôi đã tìm kiếm {search_query} trên Google.")
-            else:
-                self.speak_ui("Không có gì để tìm kiếm!")
-            return
+    def classify_intent_simple(self, text):
+        """Legacy."""
+        from service.intern import IntentClassifier
+        return IntentClassifier.classify(text)

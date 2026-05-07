@@ -8,7 +8,8 @@ Giao diện đăng nhập đơn giản đẹp như giao diện chính
 import sys
 import os
 import hashlib
-import json
+import random
+import string
 from PyQt6.QtWidgets import (QApplication, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit, 
                             QMessageBox, QWidget, QMenuBar, QMenu, QCheckBox, QSpinBox, QSlider)
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QDateTime, QPropertyAnimation, QRect
@@ -17,13 +18,16 @@ from PyQt6.QtGui import QFont, QColor
 class LoginView(QDialog):
     login_success = pyqtSignal(str)
     
-    def __init__(self):
+    def __init__(self, login_service=None):
         super().__init__()
-        self.users_file = "users.json"
-        self.settings_file = "user_settings.json"
-        self.load_settings()
+        # Service injection - View không tự tạo Service
+        self.login_service = login_service
+        if self.login_service is None:
+            from service.login_service import LoginService
+            self.login_service = LoginService()
+        
+        self.settings = self.login_service.load_settings()
         self.init_ui()
-        self.load_users()
     
     def init_ui(self):
         """Khởi tạo giao diện đăng nhập đơn giản"""
@@ -139,32 +143,9 @@ class LoginView(QDialog):
         
         layout.addLayout(register_layout)
     
-    def load_settings(self):
-        """Tải cài đặt người dùng"""
-        try:
-            if os.path.exists(self.settings_file):
-                with open(self.settings_file, 'r', encoding='utf-8') as f:
-                    self.settings = json.load(f)
-            else:
-                self.settings = {
-                    "auto_start_assistant": True,
-                    "assistant_delay": 1000,
-                    "speech_recognition": True,
-                    "text_to_speech": True,
-                    "volume": 80,
-                    "speech_rate": 1.0
-                }
-        except Exception as e:
-            print(f"Lỗi tải settings: {e}")
-            self.settings = {}
-    
     def save_settings(self):
-        """Lưu cài đặt người dùng"""
-        try:
-            with open(self.settings_file, 'w', encoding='utf-8') as f:
-                json.dump(self.settings, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            print(f"Lỗi lưu settings: {e}")
+        """Lưu cài đặt người dùng qua Service"""
+        self.login_service.save_settings(self.settings)
     
     def show_settings_dialog(self):
         """Hiển thị dialog cài đặt hệ thống"""
@@ -371,29 +352,7 @@ class LoginView(QDialog):
         
         dialog.exec()
     
-    def load_users(self):
-        """Tải danh sách người dùng"""
-        try:
-            if os.path.exists(self.users_file):
-                with open(self.users_file, 'r', encoding='utf-8') as f:
-                    self.users = json.load(f)
-            else:
-                self.users = {}
-        except Exception as e:
-            print(f"Loi tai nguoi dung: {e}")
-            self.users = {}
     
-    def save_users(self):
-        """Lưu danh sách người dùng"""
-        try:
-            with open(self.users_file, 'w', encoding='utf-8') as f:
-                json.dump(self.users, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            print(f"Loi luu nguoi dung: {e}")
-    
-    def hash_password(self, password):
-        """Mã hóa mật khẩu"""
-        return hashlib.sha256(password.encode('utf-8')).hexdigest()
     
     def show_toast(self, message, is_success=True):
         """Hiển thị toast đơn giản trên dialog"""
@@ -515,8 +474,6 @@ class LoginView(QDialog):
         captcha_input.setFixedWidth(20)
         
         # Tạo captcha ngẫu nhiên
-        import random
-        import string
         captcha_text = ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
         
         # Chuyển captcha thành button
@@ -594,13 +551,13 @@ class LoginView(QDialog):
                 refresh_captcha()  # Tạo captcha mới
                 return
             
-            # Check if user exists in database
-            if self.get_user_password_hash(uname):
+            # Check if user exists
+            if self.login_service.user_exists(uname):
                 QMessageBox.warning(dialog, "Lỗi", "Tên đã tồn tại!")
                 return
             
-            # Register in database
-            if self.save_new_user(uname, pwd):
+            # Register via Service
+            if self.login_service.save_new_user(uname, pwd):
                 QMessageBox.information(dialog, "Thành công", "Đăng ký thành công!")
                 dialog.accept()
             else:
@@ -614,7 +571,7 @@ class LoginView(QDialog):
             self.login_password.clear()
     
     def login(self):
-        """Xử lý đăng nhập"""
+        """Xử lý đăng nhập - View chỉ gọi Service, không xử lý logic"""
         username = self.login_username.text().strip()
         password = self.login_password.text()
         
@@ -622,84 +579,20 @@ class LoginView(QDialog):
             self.show_toast("Vui lòng nhập đầy đủ thông tin!", False)
             return
         
-        # Check user in database
-        stored_hash = self.get_user_password_hash(username)
-        
-        if stored_hash:
-            input_hash = self.hash_password(password)
-            
-            if stored_hash == input_hash:
-                self.show_toast("Đăng nhập thành công!", True)
-                # Emit login success with error handling
-                try:
-                    self.login_success.emit(username)
-                    print("Login signal emitted successfully")
-                except Exception as e:
-                    print(f"Error emitting login signal: {e}")
-                    import traceback
-                    traceback.print_exc()
-            else:
-                self.show_toast("Mật khẩu không đúng!", False)
+        # Xác thực qua Service - View không biết chi tiết
+        if self.login_service.authenticate_user(username, password):
+            self.show_toast("Đăng nhập thành công!", True)
+            try:
+                self.login_success.emit(username)
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
         else:
-            self.show_toast("Tên đăng nhập không tồn tại!", False)
-    
-    def get_user_password_hash(self, username):
-        """Get user password hash from database"""
-        import sqlite3
-        import os
-        
-        try:
-            # Database path
-            db_path = os.path.join(os.path.dirname(__file__), '..', 'conversations.db')
-            
-            conn = sqlite3.connect(db_path)
-            cursor = conn.cursor()
-            
-            # Get user password hash
-            cursor.execute('SELECT matKhauMaHoa FROM users WHERE tenKhachHang = ?', (username,))
-            result = cursor.fetchone()
-            
-            conn.close()
-            
-            if result:
-                return result[0]
+            if self.login_service.user_exists(username):
+                self.show_toast("Mật khẩu không đúng!", False)
             else:
-                return None
-                
-        except Exception as e:
-            print(f"Lỗi đọc database: {e}")
-            return None
+                self.show_toast("Tên đăng nhập không tồn tại!", False)
     
-    def save_new_user(self, username, password):
-        """Save new user to database"""
-        import sqlite3
-        import os
-        
-        try:
-            # Database path
-            db_path = os.path.join(os.path.dirname(__file__), '..', 'conversations.db')
-            
-            # Hash password
-            password_hash = self.hash_password(password)
-            
-            conn = sqlite3.connect(db_path)
-            cursor = conn.cursor()
-            
-            # Insert new user
-            cursor.execute('''
-                INSERT INTO users (tenKhachHang, matKhauMaHoa)
-                VALUES (?, ?)
-            ''', (username, password_hash))
-            
-            conn.commit()
-            conn.close()
-            
-            print(f"User {username} registered successfully!")
-            return True
-            
-        except Exception as e:
-            print(f"Lỗi đăng ký user: {e}")
-            return False
 
 def main():
     app = QApplication(sys.argv)
